@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/pkg/errors"
 )
@@ -49,9 +50,24 @@ type globalTradeLog map[string]*companyTradeLog
 func (t globalTradeLog) tax() float64 {
 	var tax float64
 
+	// use channel with WaitGroup to allow (but not guarantee) parallelism
+	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done()
+	taxes := make(chan float64, len(t))
+	waitGroup := &sync.WaitGroup{}
+
 	// total tax due is the sum of the tax due for each company
+	// start each company's calculation in a parallel goroutine
+	waitGroup.Add(len(t))
 	for _, companyLog := range t {
-		tax += companyLog.tax()
+		go companyLog.tax(waitGroup, taxes)
+	}
+
+	// block until each company's goroutine calls Done() on the WaitGroup
+	waitGroup.Wait()
+	close(taxes)
+
+	for companyTax := range taxes {
+		tax += companyTax
 	}
 
 	return tax
@@ -59,7 +75,9 @@ func (t globalTradeLog) tax() float64 {
 
 // tax iterates in order over all Buys in this log and find computes the tax based on a static 25% rate
 // mutates this companyTradeLog in place (specifically, modifies trade.Remaining to compute cost FIFO cost basis)
-func (t *companyTradeLog) tax() float64 {
+func (t *companyTradeLog) tax(waitGroup *sync.WaitGroup, taxes chan<- float64) {
+	defer waitGroup.Done()
+
 	var profit float64
 
 	for _, sale := range t.Trades {
@@ -108,10 +126,12 @@ func (t *companyTradeLog) tax() float64 {
 
 	// no tax carry-forward accounting if company lost money in calendar year
 	if profit <= 0 {
-		return 0
+		taxes <- 0
+	} else {
+		taxes <- profit * taxRate
 	}
 
-	return profit * taxRate
+	return
 }
 
 func formatCurrency(amount float64, symbol string) string {
