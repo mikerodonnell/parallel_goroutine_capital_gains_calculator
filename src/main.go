@@ -18,16 +18,14 @@ const pollInterval = 100 * time.Millisecond
 const taxRate = 0.25
 
 func main() {
-	fileContents, err := fileio.ReadLinesFromFile("resources/trades.csv")
+	trades, err := fileio.ReadLinesFromFile("resources/trades.csv")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tax := calculateTax(fileContents)
-	fmt.Println("~~~~~~~ wait loop tax: ", tax)
+	fmt.Println("calculating total tax using wait loop: ", calculateTax(trades))
 
-	tax = calculateTaxGroup(fileContents)
-	fmt.Println("~~~~~~~ wait group tax: ", tax)
+	fmt.Println("re-calculating total tax using sync.WaitGroup (should match): ", calculateTaxGroup(trades))
 }
 
 func calculateTax(trades []string) string {
@@ -42,6 +40,12 @@ func calculateTaxGroup(trades []string) string {
 	return formatCurrency(log.tax(), currencySymbol)
 }
 
+// globalTradeLog is the high level interface providing tax calculation across all companies
+type globalTradeLog interface {
+	// tax returns the net tax due across all companies
+	tax() float64
+}
+
 type trade struct {
 	Date      string
 	Symbol    string
@@ -51,46 +55,42 @@ type trade struct {
 	Remaining uint
 }
 
-// companyTradeLog is all trades for a common symbol
+// companyTradeLog is all trades for one company
+// low level type used by various globalTradeLog implementations
 type companyTradeLog struct {
 	Trades []*trade
 }
 
-// globalTradeLog is all trades, sharded by company symbol
-
-type globalTradeLog interface {
-	tax() float64
-}
-
+// waitLoopGlobalTradeLog is a globalTradeLog implementation that uses a polling loop to wait for each company's goroutine to complete
 type waitLoopGlobalTradeLog struct {
 	companyTradeLogs map[string]*companyTradeLog
 }
 
+// waitLoopGlobalTradeLog is a globalTradeLog implementation that uses sync.WaitGroup to wait for each company's goroutine to return
 type waitGroupGlobalTradeLog struct {
 	companyTradeLogs map[string]*companyTradeLog
 }
 
 func (t *waitLoopGlobalTradeLog) tax() float64 {
-	var tax float64
-
-	// use channel with WaitGroup to allow (but not guarantee) parallelism
-	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done()
 	taxes := make(chan float64, len(t.companyTradeLogs))
 
 	// total tax due is the sum of the tax due for each company
-	// start each company's calculation in a parallel goroutine
+	// start each company's calculation in a goroutine
+	// like the WaitGroup approach, this allows but not guarantee parallelism
+	// companyTradeLog.tax() is responsible for putting an amount on the chan then returning -- no waitGroup.Done() or other explicit "done" notification
 	for _, companyLog := range t.companyTradeLogs {
 		go companyLog.tax(taxes, nil)
 	}
 
+	var tax float64
 	var counter int
 WAITLOOP:
 	for true {
 		select {
 		case partialTax := <-taxes:
-			counter++
-			// accumulate the total tax
+			// accumulate the total tax, and track how many companies have completed
 			tax += partialTax
+			counter++
 
 			// if all companies are done calculating
 			if counter >= len(t.companyTradeLogs) {
@@ -107,15 +107,13 @@ WAITLOOP:
 }
 
 func (t *waitGroupGlobalTradeLog) tax() float64 {
-	var tax float64
-
-	// use channel with WaitGroup to allow (but not guarantee) parallelism
-	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done()
 	taxes := make(chan float64, len(t.companyTradeLogs))
 	waitGroup := &sync.WaitGroup{}
 
 	// total tax due is the sum of the tax due for each company
-	// start each company's calculation in a parallel goroutine
+	// start each company's calculation in a goroutine
+	// like the wait loop approach, this allows but not guarantee parallelism
+	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done() before returning
 	waitGroup.Add(len(t.companyTradeLogs))
 	for _, companyLog := range t.companyTradeLogs {
 		go companyLog.tax(taxes, waitGroup)
@@ -125,6 +123,7 @@ func (t *waitGroupGlobalTradeLog) tax() float64 {
 	waitGroup.Wait()
 	close(taxes)
 
+	var tax float64
 	for companyTax := range taxes {
 		tax += companyTax
 	}
