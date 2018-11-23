@@ -2,16 +2,19 @@ package main
 
 import (
 	"fileio"
+
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 )
 
 const currencySymbol = "$"
+const pollInterval = 100 * time.Millisecond
 const taxRate = 0.25
 
 func main() {
@@ -21,11 +24,20 @@ func main() {
 	}
 
 	tax := calculateTax(fileContents)
-	fmt.Println("~~~~~~~ tax: ", tax)
+	fmt.Println("~~~~~~~ wait loop tax: ", tax)
+
+	tax = calculateTaxGroup(fileContents)
+	fmt.Println("~~~~~~~ wait group tax: ", tax)
 }
 
 func calculateTax(trades []string) string {
-	log := newGlobalTradeLog(trades)
+	var log globalTradeLog = newGlobalTradeLog(trades)
+
+	return formatCurrency(log.tax(), currencySymbol)
+}
+
+func calculateTaxGroup(trades []string) string {
+	var log globalTradeLog = newGlobalGroupTradeLog(trades)
 
 	return formatCurrency(log.tax(), currencySymbol)
 }
@@ -45,21 +57,68 @@ type companyTradeLog struct {
 }
 
 // globalTradeLog is all trades, sharded by company symbol
-type globalTradeLog map[string]*companyTradeLog
 
-func (t globalTradeLog) tax() float64 {
+type globalTradeLog interface {
+	tax() float64
+}
+
+type waitLoopGlobalTradeLog struct {
+	companyTradeLogs map[string]*companyTradeLog
+}
+
+type waitGroupGlobalTradeLog struct {
+	companyTradeLogs map[string]*companyTradeLog
+}
+
+func (t *waitLoopGlobalTradeLog) tax() float64 {
 	var tax float64
 
 	// use channel with WaitGroup to allow (but not guarantee) parallelism
 	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done()
-	taxes := make(chan float64, len(t))
+	taxes := make(chan float64, len(t.companyTradeLogs))
+
+	// total tax due is the sum of the tax due for each company
+	// start each company's calculation in a parallel goroutine
+	for _, companyLog := range t.companyTradeLogs {
+		go companyLog.tax(taxes, nil)
+	}
+
+	var counter int
+WAITLOOP:
+	for true {
+		select {
+		case partialTax := <-taxes:
+			counter++
+			// accumulate the total tax
+			tax += partialTax
+
+			// if all companies are done calculating
+			if counter >= len(t.companyTradeLogs) {
+				break WAITLOOP
+			}
+		default:
+			// at least one company is still being calculated
+			// this polling is avoidable using the WaitGroup approach
+			time.Sleep(pollInterval)
+		}
+	}
+
+	return tax
+}
+
+func (t *waitGroupGlobalTradeLog) tax() float64 {
+	var tax float64
+
+	// use channel with WaitGroup to allow (but not guarantee) parallelism
+	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done()
+	taxes := make(chan float64, len(t.companyTradeLogs))
 	waitGroup := &sync.WaitGroup{}
 
 	// total tax due is the sum of the tax due for each company
 	// start each company's calculation in a parallel goroutine
-	waitGroup.Add(len(t))
-	for _, companyLog := range t {
-		go companyLog.tax(waitGroup, taxes)
+	waitGroup.Add(len(t.companyTradeLogs))
+	for _, companyLog := range t.companyTradeLogs {
+		go companyLog.tax(taxes, waitGroup)
 	}
 
 	// block until each company's goroutine calls Done() on the WaitGroup
@@ -75,8 +134,10 @@ func (t globalTradeLog) tax() float64 {
 
 // tax iterates in order over all Buys in this log and find computes the tax based on a static 25% rate
 // mutates this companyTradeLog in place (specifically, modifies trade.Remaining to compute cost FIFO cost basis)
-func (t *companyTradeLog) tax(waitGroup *sync.WaitGroup, taxes chan<- float64) {
-	defer waitGroup.Done()
+func (t *companyTradeLog) tax(taxes chan<- float64, waitGroup *sync.WaitGroup) {
+	if waitGroup != nil {
+		defer waitGroup.Done()
+	}
 
 	var profit float64
 
@@ -179,8 +240,20 @@ func parseTrade(tradeLine string) (*trade, error) {
 	}, nil
 }
 
-func newGlobalTradeLog(tradeLines []string) globalTradeLog {
-	log := globalTradeLog{}
+func newGlobalTradeLog(tradeLines []string) *waitLoopGlobalTradeLog {
+	return &waitLoopGlobalTradeLog{
+		companyTradeLogs: buildCompanyTradeLogMap(tradeLines),
+	}
+}
+
+func newGlobalGroupTradeLog(tradeLines []string) *waitGroupGlobalTradeLog {
+	return &waitGroupGlobalTradeLog{
+		companyTradeLogs: buildCompanyTradeLogMap(tradeLines),
+	}
+}
+
+func buildCompanyTradeLogMap(tradeLines []string) map[string]*companyTradeLog {
+	companyTradeLogs := map[string]*companyTradeLog{}
 
 	for _, tradeLine := range tradeLines {
 		trd, err := parseTrade(tradeLine)
@@ -191,16 +264,20 @@ func newGlobalTradeLog(tradeLines []string) globalTradeLog {
 		}
 
 		symbol := strings.ToLower(trd.Symbol)
-		if companyLog, ok := log[symbol]; ok {
+		if companyLog, ok := companyTradeLogs[symbol]; ok {
 			// we already know about this company, append to its companyTradeLog
-			companyLog.Trades = append(companyLog.Trades, trd)
+			companyLog.append(trd)
 		} else {
 			// first trade we've encountered for this company, initialize a companyTradeLog
-			log[symbol] = &companyTradeLog{
+			companyTradeLogs[symbol] = &companyTradeLog{
 				Trades: []*trade{trd},
 			}
 		}
 	}
 
-	return log
+	return companyTradeLogs
+}
+
+func (t *companyTradeLog) append(trd *trade) {
+	t.Trades = append(t.Trades, trd)
 }
