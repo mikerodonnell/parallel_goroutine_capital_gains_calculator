@@ -3,7 +3,7 @@ A simple capital gains tax calculator. Computes the cost basis and capital gains
 
 
 ## what is this really?
-A demo of two approaches for spawning and waiting for parallel workers. In either approach, the multiple goroutines allow, but don't guarantee parallelism.
+A demo of two approaches for spawning and waiting for parallel workers. In either approach, the multiple goroutines allow, but don't guarantee, parallelism.
 1) wait loop that uses the chan both for passing values _and_ implicitly tracking goroutine completion
 1) using Go's sync.WaitGroup to explicitly track goroutine completion
 
