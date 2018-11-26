@@ -1,0 +1,26 @@
+
+cd ~/git/mikerodonnell/hr/src
+
+
+export GOPATH=/Users/modonnell/git/mikerodonnell/hr:/Users/modonnell/go_1_9
+ // ASAPP gopath is /Users/modonnell/git/asapp/go:/Users/modonnell/go
+
+go get "github.com/pkg/errors"
+
+go run src/main.go
+
+
+
+
+
+
+
+example covering:
+
+consumer/master spawns and then waits for other threads -- and needs to hear back
+
+goroutines in other functions
+
+fatal error: all goroutines are asleep - deadlock!
+
+range operator ranges until closure -- close channel before ranging, OR used fixed limit in for loop
