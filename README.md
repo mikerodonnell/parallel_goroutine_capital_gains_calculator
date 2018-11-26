@@ -1,5 +1,5 @@
 ## what is this?
-A simple capital gains tax calculator. Computes the cost basis and capital gains tax, including short sales and split lots. Applies a simple 15% flat tax rate. Does not support short vs long terms, marginal tax brackets, or loss carryforward.
+A simple capital gains tax calculator. Computes the cost basis and capital gains tax, including short sales and split lots. Applies a simple 25% flat tax rate. Does not support short vs long terms, marginal tax brackets, or loss carryforward.
 
 
 ## what is this really?
