@@ -16,7 +16,7 @@ I didn't find examples that were sufficiently complete or explained. Particularl
 
 ## usage
 
-Place a trades.csv file in the resources directory with the following format:
+Place a trades.csv file in the resources directory with the following format (B => buy, S => sale):
 
 ||||||
 |---|---|---|---|---|
@@ -26,8 +26,6 @@ Place a trades.csv file in the resources directory with the following format:
 |2018-02-08|AAPL|S|10|90.00|
 |2018-02-08|NUAN|B|10|10.00|
 |2018-03-10|AAPL|S|80|120.00|
-
-B is a Buy, S is a sale.
 
 ```
 go get "github.com/pkg/errors"
