@@ -8,13 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/pkg/errors"
 )
 
 const currencySymbol = "$"
-const pollInterval = 100 * time.Millisecond
 const taxRate = 0.25
 
 func main() {
@@ -23,21 +21,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("calculating total tax using wait loop: ", calculateTax(trades))
+	var log globalTradeLog = newWaitLoopGlobalTradeLog(trades)
+	fmt.Println("calculating total tax using wait loop: ", formatCurrency(log.tax(), currencySymbol))
 
-	fmt.Println("re-calculating total tax using sync.WaitGroup (should match): ", calculateTaxGroup(trades))
-}
-
-func calculateTax(trades []string) string {
-	var log globalTradeLog = newGlobalTradeLog(trades)
-
-	return formatCurrency(log.tax(), currencySymbol)
-}
-
-func calculateTaxGroup(trades []string) string {
-	var log globalTradeLog = newGlobalGroupTradeLog(trades)
-
-	return formatCurrency(log.tax(), currencySymbol)
+	log = newGroupGlobalTradeLog(trades)
+	fmt.Println("re-calculating total tax using sync.WaitGroup (should match): ", formatCurrency(log.tax(), currencySymbol))
 }
 
 // globalTradeLog is the high level interface providing tax calculation across all companies
@@ -76,7 +64,7 @@ func (t *waitLoopGlobalTradeLog) tax() float64 {
 
 	// total tax due is the sum of the tax due for each company
 	// start each company's calculation in a goroutine
-	// like the WaitGroup approach, this allows but not guarantee parallelism
+	// like the WaitGroup approach, this allows but does not guarantee parallelism
 	// companyTradeLog.tax() is responsible for putting an amount on the chan then returning -- no waitGroup.Done() or other explicit "done" notification
 	for _, companyLog := range t.companyTradeLogs {
 		go companyLog.tax(taxes, nil)
@@ -86,47 +74,68 @@ func (t *waitLoopGlobalTradeLog) tax() float64 {
 	var counter int
 WAITLOOP:
 	for true {
+		// block until one of the goroutines has completed and published an amount to the chan
+		partialTax := <-taxes
+		// accumulate the total tax, and track how many companies have completed
+		tax += partialTax
+		counter++
+
+		// if all companies are done calculating
+		if counter >= len(t.companyTradeLogs) {
+			break WAITLOOP
+		}
+
+		/* if this function had anything else to do rather than just waiting, we could do a non-blocking read
 		select {
 		case partialTax := <-taxes:
-			// accumulate the total tax, and track how many companies have completed
 			tax += partialTax
 			counter++
 
-			// if all companies are done calculating
 			if counter >= len(t.companyTradeLogs) {
 				break WAITLOOP
 			}
 		default:
 			// at least one company is still being calculated
-			// this polling is avoidable using the WaitGroup approach
-			time.Sleep(pollInterval)
+			// can do other work here while waiting, ideally something that takes less time than a company tax calculation
 		}
+		*/
 	}
 
 	return tax
 }
 
 func (t *waitGroupGlobalTradeLog) tax() float64 {
+	var tax float64
 	taxes := make(chan float64, len(t.companyTradeLogs))
+
+	// create a WaitGroup that expects one "done" signal for each company
 	waitGroup := &sync.WaitGroup{}
+	waitGroup.Add(len(t.companyTradeLogs))
 
 	// total tax due is the sum of the tax due for each company
 	// start each company's calculation in a goroutine
-	// like the wait loop approach, this allows but not guarantee parallelism
+	// like the wait loop approach, this allows but does not guarantee parallelism
 	// companyTradeLog.tax() is responsible for putting an amount on the chan and calling waitGroup.Done() before returning
-	waitGroup.Add(len(t.companyTradeLogs))
 	for _, companyLog := range t.companyTradeLogs {
 		go companyLog.tax(taxes, waitGroup)
 	}
 
 	// block until each company's goroutine calls Done() on the WaitGroup
 	waitGroup.Wait()
+
+	// range iterates on a chan until it is closed. since we're done waiting, it's safe to close the chan
 	close(taxes)
 
-	var tax float64
 	for companyTax := range taxes {
 		tax += companyTax
 	}
+
+	/* equivalent approach without closing the chan and using range:
+	for i := 0; i < len(t.companyTradeLogs); i++ {
+		companyTax := <-taxes
+		tax += companyTax
+	}
+	*/
 
 	return tax
 }
@@ -239,19 +248,19 @@ func parseTrade(tradeLine string) (*trade, error) {
 	}, nil
 }
 
-func newGlobalTradeLog(tradeLines []string) *waitLoopGlobalTradeLog {
+func newWaitLoopGlobalTradeLog(tradeLines []string) *waitLoopGlobalTradeLog {
 	return &waitLoopGlobalTradeLog{
-		companyTradeLogs: buildCompanyTradeLogMap(tradeLines),
+		companyTradeLogs: parseTradeEntries(tradeLines),
 	}
 }
 
-func newGlobalGroupTradeLog(tradeLines []string) *waitGroupGlobalTradeLog {
+func newGroupGlobalTradeLog(tradeLines []string) *waitGroupGlobalTradeLog {
 	return &waitGroupGlobalTradeLog{
-		companyTradeLogs: buildCompanyTradeLogMap(tradeLines),
+		companyTradeLogs: parseTradeEntries(tradeLines),
 	}
 }
 
-func buildCompanyTradeLogMap(tradeLines []string) map[string]*companyTradeLog {
+func parseTradeEntries(tradeLines []string) map[string]*companyTradeLog {
 	companyTradeLogs := map[string]*companyTradeLog{}
 
 	for _, tradeLine := range tradeLines {
