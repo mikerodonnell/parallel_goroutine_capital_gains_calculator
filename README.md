@@ -3,7 +3,7 @@ A simple capital gains tax calculator. Computes the cost basis and capital gains
 
 
 ## what is this really?
-A demo of two approaches for spawning and waiting for parallel workers. In either approach, the multiple goroutines allow, but don't guarantee, parallelism.
+A demo of two approaches for spawning and waiting for parallel workers. In either approach, one goroutine is dispatched for each company stock symbol, which allows -- but don't guarantee -- parallelism.
 1) wait loop that uses the chan both for passing values _and_ implicitly tracking goroutine completion
 1) using Go's sync.WaitGroup to explicitly track goroutine completion
 
@@ -26,6 +26,14 @@ Place a trades.csv file in the resources directory with the following format (B 
 |2018-02-08|AAPL|S|10|90.00|
 |2018-02-08|NUAN|B|10|10.00|
 |2018-03-10|AAPL|S|80|120.00|
+|2018-03-12|AAPL|B|10|70.00|
+|2018-02-08|NUAN|S|10|20.00|
+|2018-04-08|AAPL|B|70|160.00|
+|2018-07-10|NVDA|B|110|230.00|
+|2018-07-22|NVDA|B|90|244.00|
+|2018-10-22|NVDA|S|100|259.00|
+|2018-10-26|NVDA|S|50|230.00|
+|2018-11-25|NVDA|B|50|200.00|
 
 ```
 go get "github.com/pkg/errors"
